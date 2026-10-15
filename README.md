@@ -83,7 +83,7 @@ Formulário web (fichas 1–21)  →  Gera .BCK em oculto (formato oficial SCNES
 ### 📦 Geração do `.BCK` (SCNES)
 - Reproduz o **formato oficial de exportação** do SCNES 4.8.50 (container + 68 tabelas + TXT de transmissão + QRP opcional)
 - Validado **byte a byte** contra exportação real do município (2.082 estabelecimentos)
-- Nome no padrão de transmissão: `CNES110020<data><hora><ano><versão>.bck` (destino DATASUS) — a UF só aparece no modo *Município*
+- Nome no padrão de transmissão: **modo Município (padrão)** → `CNES0RO110020<data><hora><ano><versão>.bck` (destino `0`, UF no nome) — é o que o SCNES local gera e aceita importar. No modo *DATASUS* o nome é `CNES110020…` (destino `6`) e o importador local recusa: *"Esse Arquivo não se destina ao gestor configurado"*
 - **Sempre gerado**, mesmo sem CNES preenchido (estabelecimento novo)
 
 ### ✉️ Envio automático para a GECAV
@@ -264,7 +264,7 @@ Estrutura das linhas (conferida contra o `.BCK` oficial):
 | Linha | Valor | Significado |
 |------:|-------|-------------|
 | 0 | `0` | constante do SCNES |
-| 1 | `6` | **destino** da exportação (`6` = DATASUS, `0` = Município) — é o mesmo código do campo `DESTINO` de `LFCES055` |
+| 1 | `6` | **destino** da exportação (`6` = DATASUS, `0` = Município; o **padrão do JARVIS é `0`**, o `6` acima é o do golden oficial) — é o mesmo código do campo `DESTINO` de `LFCES055` |
 | 2 | `2` | constante do SCNES |
 | 3 | `RO` | UF |
 | 4 | `110020` | código do município gestor |
@@ -273,28 +273,31 @@ Estrutura das linhas (conferida contra o `.BCK` oficial):
 | 7 | `C0DC0F75` | **`PREFIXOMAQ`** da instalação — o mesmo valor gravado em `LFCES000` (constante `PREFIXOMAQ` no módulo) |
 | 8 | `SCNES COMPLETO` | rótulo do pacote |
 
-**Nome do arquivo interno**: o mesmo radical do `.bck` em **minúsculas** — `cnes110020<DDMMYYYY><HHMMSS><YYYY><versão>.txt` (ex.: `cnes1100203009202613170920264850.txt`), como no export oficial.
+**Nome do arquivo interno**: o mesmo radical do `.bck` em **minúsculas** — no padrão `cnes0ro110020<DDMMYYYY><HHMMSS><YYYY><versão>.txt` (ex.: `cnes0ro1100201008202608150720264850.txt`); no modo DATASUS, `cnes110020….txt`, como no export oficial.
 
 ### 📛 Nome do arquivo `.BCK`
 
-O anexo do e-mail segue **sempre** o padrão de transmissão do SCNES:
+O anexo do e-mail segue **sempre** o padrão de transmissão do SCNES. No
+**modo Município (padrão)** o nome é:
 
 ```
-CNES1100203009202613170920264850.bck
-│    │     │        │    │
-│    │     │        │    └─ 4850 (dígitos da versão 4.8.50)
-│    │     │        └─ 2026 (ano)
-│    │     └─ 30092026 + 131709 (DDMMYYYY + HHMMSS)
-│    └─ 110020 (código do município gestor)
-└─ CNES (prefixo de transmissão)
+CNES0RO1100201008202608150720264850.bck
+└─ CNES0RO: prefixo (CNES + destino 0 + UF RO)
+   └─ 110020 (código do município gestor)
+      └─ 10082026 + 081507 (DDMMYYYY + HHMMSS)
+         └─ 2026 (ano)
+            └─ 4850 (dígitos da versão 4.8.50)
 ```
 
-Formato: `CNES{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versão}.bck`
-
-No modo **Município** (`MODO_EXPORTACAO = "MUNICIPIO"`, destino `0`) a UF entra
-no nome, como no padrão antigo:
+Formato (**padrão Município**, destino `0`):
 `CNES0{UF}{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versão}.bck`
-(ex.: `CNES0RO1100201008202608150720264840.bck`).
+(ex.: `CNES0RO1100201008202608150720264840.bck`) — é o mesmo padrão que o
+próprio SCNES local gera e que o importador aceita.
+
+No modo **DATASUS** (`MODO_EXPORTACAO = "DATASUS"`, destino `6`) a UF sai do
+nome: `CNES{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versão}.bck`
+(ex.: `CNES1100203009202613170920264850.bck`) — esse formato é recusado na
+importação local com *"Esse Arquivo não se destina ao gestor configurado"*.
 
 ### 🗃️ QRP (opcional)
 

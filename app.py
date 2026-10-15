@@ -920,8 +920,12 @@ PREFIXOMAQ     = "C0DC0F75"
 # do container.
 #   "DATASUS"   → DESTINO=6, nome CNES{MUN}…,    "…para DATASUS em DD/MM/AAAA*CN"
 #   "MUNICIPIO" → DESTINO=0, nome CNES0{UF}{MUN}…, "…para Município P. Gestão em …*CN"
-# O arquivo oficial de referência (golden file) é um export "para DATASUS".
-MODO_EXPORTACAO = "DATASUS"
+# Padrão = MUNICIPIO: é o modo com que o próprio SCNES local exporta (nome
+# CNES0RO110020… e DESTINO=0 conferidos no export de 3,4 MB da máquina) e o
+# único que o importador aceita — um .bck em modo DATASUS é recusado na hora de
+# adicionar o arquivo com "Esse Arquivo não se destina ao gestor configurado".
+# (O golden de referência é um export "para DATASUS": nele DESTINO=6.)
+MODO_EXPORTACAO = "MUNICIPIO"
 
 CHUNK  = 16384
 MARKER = b"EC2\x00"
