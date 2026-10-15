@@ -52,7 +52,7 @@ Formulário web (fichas 1–21)  →  Gera .BCK em oculto (formato oficial SCNES
                               →  GECAV importa o .BCK no SCNES (CNES/DATASUS)
 ```
 
-**Ponto central da solução**: o JARVIS reproduz o formato `.BCK` de exportação do SCNES 4.8.40 — validado **byte a byte** contra exportações reais (68 tabelas, schemas e serialização idênticos). O cadastro pode ser feito **sem CNES preenchido**: o objetivo é justamente gerar a numeração CNES de estabelecimentos novos na importação.
+**Ponto central da solução**: o JARVIS reproduz o formato `.BCK` de exportação do SCNES **4.8.50** — validado **byte a byte** contra exportações reais (68 tabelas, schemas e serialização idênticos; METADATA das 68 tabelas igual ao export oficial). O cadastro pode ser feito **sem CNES preenchido**: o objetivo é justamente gerar a numeração CNES de estabelecimentos novos na importação.
 
 ---
 
@@ -81,9 +81,9 @@ Formulário web (fichas 1–21)  →  Gera .BCK em oculto (formato oficial SCNES
 - Suporte a **anexos** (PDF, imagens) enviados junto
 
 ### 📦 Geração do `.BCK` (SCNES)
-- Reproduz o **formato oficial de exportação** do SCNES 4.8.40 (container + 68 tabelas + TXT de transmissão)
+- Reproduz o **formato oficial de exportação** do SCNES 4.8.50 (container + 68 tabelas + TXT de transmissão + QRP opcional)
 - Validado **byte a byte** contra exportação real do município (2.082 estabelecimentos)
-- Nome no padrão de transmissão: `CNES0RO110020<data><hora><ano><versão>.bck`
+- Nome no padrão de transmissão: `CNES110020<data><hora><ano><versão>.bck` (destino DATASUS) — a UF só aparece no modo *Município*
 - **Sempre gerado**, mesmo sem CNES preenchido (estabelecimento novo)
 
 ### ✉️ Envio automático para a GECAV
@@ -249,46 +249,64 @@ O `.BCK` carrega também um arquivo TXT com os parâmetros de transmissão, no m
 
 ```
 0
-0
+6
 2
 RO
 110020
 SEMUSA
-4.8.40
-<checksum-hex>
+4.8.50
+C0DC0F75
 SCNES COMPLETO
 ```
 
-**Nome do arquivo interno**: `cnes0ro110020<DDMMYYYY><HHMMSS><YYYY><versão>.txt` (ex.: `cnes0ro1100201108202612100720264840.txt`) — mesmo padrão do real.
+Estrutura das linhas (conferida contra o `.BCK` oficial):
+
+| Linha | Valor | Significado |
+|------:|-------|-------------|
+| 0 | `0` | constante do SCNES |
+| 1 | `6` | **destino** da exportação (`6` = DATASUS, `0` = Município) — é o mesmo código do campo `DESTINO` de `LFCES055` |
+| 2 | `2` | constante do SCNES |
+| 3 | `RO` | UF |
+| 4 | `110020` | código do município gestor |
+| 5 | `SEMUSA` | gestor |
+| 6 | `4.8.50` | versão do SCNES |
+| 7 | `C0DC0F75` | **`PREFIXOMAQ`** da instalação — o mesmo valor gravado em `LFCES000` (constante `PREFIXOMAQ` no módulo) |
+| 8 | `SCNES COMPLETO` | rótulo do pacote |
+
+**Nome do arquivo interno**: o mesmo radical do `.bck` em **minúsculas** — `cnes110020<DDMMYYYY><HHMMSS><YYYY><versão>.txt` (ex.: `cnes1100203009202613170920264850.txt`), como no export oficial.
 
 ### 📛 Nome do arquivo `.BCK`
 
 O anexo do e-mail segue **sempre** o padrão de transmissão do SCNES:
 
 ```
-CNES0RO1100201108202612100720264840.bck
-│    ││      │   │          │    │
-│    ││      │   │          │    └─ 4840 (dígitos da versão 4.8.40)
-│    ││      │   │          └─ 2026 (ano)
-│    ││      │   └─ 121007 (HHMMSS)
-│    ││      └─ 11082026 (DDMMYYYY)
-│    │└─ 110020 (código do município gestor)
-│    └─ RO (UF)
-└─ CNES0 (prefixo de transmissão)
+CNES1100203009202613170920264850.bck
+│    │     │        │    │
+│    │     │        │    └─ 4850 (dígitos da versão 4.8.50)
+│    │     │        └─ 2026 (ano)
+│    │     └─ 30092026 + 131709 (DDMMYYYY + HHMMSS)
+│    └─ 110020 (código do município gestor)
+└─ CNES (prefixo de transmissão)
 ```
 
-Formato: `CNES0{UF}{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versão}.bck`
+Formato: `CNES{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versão}.bck`
+
+No modo **Município** (`MODO_EXPORTACAO = "MUNICIPIO"`, destino `0`) a UF entra
+no nome, como no padrão antigo:
+`CNES0{UF}{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versão}.bck`
+(ex.: `CNES0RO1100201008202608150720264840.bck`).
 
 ### 🗃️ QRP (opcional)
 
-Exportações reais do SCNES incluem um arquivo `.qrp` (relatório de protocolo de transmissão, binário, ~2,4 MB). O JARVIS tem **suporte opcional** (param `caminho_qrp` em `gerar_bck_bytes`), **desligado por padrão** — a documentação do DATASUS indica que **apenas o `.BCK` é necessário** para importação.
+Exportações reais do SCNES incluem um arquivo `.qrp` (relatório de protocolo de transmissão, binário, ~2,4 MB) como **70.ª entrada** do container, em `c:\data sus\cnes\exp_<radical>.qrp`. O JARVIS embute-o **verbatim** quando o parâmetro `caminho_qrp` é informado em `gerar_bck_bytes` — sem QRP, o pacote sai com 69 entradas (68 tabelas + TXT).
 
-### ⚠️ Checksums internos (não reproduzidos)
+### ⚠️ Checksum interno do vínculo (não reproduzido)
 
-- **CHECKSUM do vínculo (LFCES021)**: é determinístico por linha (99% idênticos entre exportações), mas o algoritmo interno do SCNES não é recuperável a partir do arquivo (16 funções de hash × ~1,5 milhão de combinações testadas). O JARVIS usa CRC32 da concatenação `unidade|prof|cbo|vínculo`.
-- **Checksum hex do TXT**: constante nas exportações da mesma instalação — provavelmente derivado de configuração/máquina.
+- **`CHECKSUM` do vínculo (`LFCES021`)**: é determinístico por linha (99% idênticos entre exportações), mas o algoritmo interno do SCNES não é recuperável a partir do arquivo (16 funções de hash × ~1,5 milhão de combinações testadas). O JARVIS usa CRC32 da concatenação `unidade|prof|cbo|vínculo`.
 
-Ambos só serão confirmados (ou descartados) pelo teste de importação real no SCNES (ver [Validação](#-validação-no-scnes-de-teste)).
+Só será confirmado (ou descartado) pelo teste de importação real no SCNES (ver [Validação](#-validação-no-scnes-de-teste)).
+
+> ℹ️ A 8.ª linha do TXT **não** é um checksum: é o `PREFIXOMAQ` da instalação (a versão anterior do JARVIS gravava ali um CRC32).
 
 ---
 
@@ -413,7 +431,7 @@ python -m pytest test_bck.py -v
 | **1 — Container** | `ler_bck` + reescrita dos chunks originais reproduz o `.BCK` real **exatamente** (integridade do parser) | ⏭️ só com os originais |
 | **2 — Escritor** | `ler_bck → escrever_bck` (zlib nível 1) produz arquivo **byte a byte idêntico** ao do SCNES | ⏭️ só com os originais |
 | **3 — DATAPACKET** | Regenera o XML das 68 tabelas a partir das linhas reais e compara **byte a byte** | ⏭️ só com os originais |
-| **4 — Estrutura** | O `.BCK` do formulário é um pacote válido (69 entradas, integridade) + nome no padrão `CNES0RO110020...bck` | ✅ sempre |
+| **4 — Estrutura** | O `.BCK` do formulário é um pacote válido (69 entradas, ou 70 com o QRP, integridade) + nome no padrão `CNES110020...bck` | ✅ sempre |
 | **5 — E-mail** | `.BCK` anexado com nome no padrão CNES + PDF, destinatário **somente** GECAV, sem Cc/Bcc (fake SMTP) | ✅ sempre |
 | **6 — Rota** | Fluxo completo via HTTP: `.BCK` gerado em oculto, anexado ao e-mail (com e sem CNES), e `/gerar-bck` responde **404** | ✅ sempre |
 
@@ -451,11 +469,11 @@ O guia completo (baixar o SCNES, instalar Firebird no Windows 11, importar e con
 
 ## 🧩 Limitações e divergências conhecidas
 
-1. **Checksums internos do SCNES não reproduzidos** (CHECKSUM do vínculo LFCES021 e checksum hex do TXT) — o algoritmo é interno do SCNES; o impacto só pode ser medido no teste de importação real
+1. **`CHECKSUM` do vínculo (LFCES021) não reproduzido** — o algoritmo é interno do SCNES; o impacto só pode ser medido no teste de importação real
 2. **Testes 1–3 pulados no repositório** — dependem dos `.BCK`/XML originais, que ficam no backup local (contêm CPFs — não versionar)
 3. **Rate limit em memória** — no Vercel (serverless multi-instância) o contador não é global entre instâncias
 4. **`TP_SUS_NAO_SUS` fixo em "S"** — a base real tem mistura S/N (60/40); o valor é dado do cadastro, não da estrutura
-5. **Configuração do município hardcoded** (`RO/110020/SEMUSA/4.8.40`) — para outro município, ajustar as constantes no topo do módulo `.BCK`
+5. **Configuração do município hardcoded** (`RO/110020/SEMUSA/4.8.50`, `PREFIXOMAQ=C0DC0F75`) — para outro município/instalação, ajustar as constantes no topo do módulo `.BCK`
 
 ---
 
@@ -473,7 +491,7 @@ O guia completo (baixar o SCNES, instalar Firebird no Windows 11, importar e con
 
 ## 🗺️ Roadmap
 
-- [ ] **Teste de importação no SCNES** com o `.BCK` do JARVIS — fechar as 2 divergências de checksum (ou descartá-las)
+- [ ] **Teste de importação no SCNES** com o `.BCK` do JARVIS — fechar a divergência de `CHECKSUM` do vínculo (ou descartá-la)
 - [ ] Reativar os testes 1–3 na suíte (restaurando originais localmente ou criando fixture)
 - [ ] Fixar o achado de segurança do `.env.example` (placeholders + rotação da senha)
 - [ ] Tornar a configuração do município parametrizável por ambiente (multi-município)
@@ -487,4 +505,4 @@ O guia completo (baixar o SCNES, instalar Firebird no Windows 11, importar e con
 
 Desenvolvido para a **SEMUSA — Secretaria Municipal de Saúde de Porto Velho/RO** · DRAC · CNES.
 
-*Formato `.BCK` decodificado e validado a partir de exportações reais do SCNES 4.8.40.*
+*Formato `.BCK` decodificado e validado a partir de exportações reais do SCNES 4.8.40/4.8.50 — ver `../ANALISE_BCK_OFICIAL.md`.*

@@ -843,7 +843,7 @@ O extrato completo em PDF está anexo a esta mensagem.
 Acompanhe o cadastro em: https://cnes.datasus.gov.br/
 
 ANEXO INTERNO (uso exclusivo GECAV): arquivo no padrão de transmissão do
-SCNES (CNES0RO110020....bck) para importação no SCNES.
+SCNES ({_prefixo_nome_bck()}....bck) para importação no SCNES.
 
 {'─'*60}
 SEMUSA — Secretaria Municipal de Saúde de Porto Velho
@@ -906,13 +906,43 @@ import zlib, struct, time as _time
 UF             = "RO"
 COD_MUN_GESTOR = "110020"
 GESTOR         = "SEMUSA"
-VERSAO         = "4.8.40"
+VERSAO         = "4.8.50"   # versão do SCNES — igual ao export oficial
 USUARIO        = "SEMUSA"
 CMPT           = datetime.now().strftime("%Y%m")
+
+# Prefixo da instalação (máquina) do gestor. No export do SCNES o 8.º campo do
+# TXT de transmissão é EXATAMENTE o PREFIXOMAQ de LFCES000 da máquina que
+# exportou — por isso os dois valores são derivados desta única constante.
+PREFIXOMAQ     = "C0DC0F75"
+
+# Destino da exportação. Controla, de uma só vez: o campo DESTINO de LFCES055
+# (e a 2.ª linha do TXT, que é o mesmo código), o nome do arquivo e a descrição
+# do container.
+#   "DATASUS"   → DESTINO=6, nome CNES{MUN}…,    "…para DATASUS em DD/MM/AAAA*CN"
+#   "MUNICIPIO" → DESTINO=0, nome CNES0{UF}{MUN}…, "…para Município P. Gestão em …*CN"
+# O arquivo oficial de referência (golden file) é um export "para DATASUS".
+MODO_EXPORTACAO = "DATASUS"
 
 CHUNK  = 16384
 MARKER = b"EC2\x00"
 TRAILER = b"\x00" * 8
+
+# Timestamp gravado em cada entrada do container. No export do SCNES NÃO é a
+# data da exportação: é um valor fixo por instalação, incrementado a cada
+# entrada (1564371498, 1564371499, …). Reproduzimos essa forma.
+TS_BASE = 1564371498
+
+def _modo_datasus() -> bool:
+    """True quando o pacote é uma exportação "para DATASUS"."""
+    return str(MODO_EXPORTACAO).strip().upper().startswith("DATA")
+
+def destino_exportacao() -> str:
+    """Código de destino (campo DESTINO de LFCES055 e 2.ª linha do TXT)."""
+    return "6" if _modo_datasus() else "0"
+
+def _destino_texto() -> str:
+    """Texto do destino como aparece na descrição do container."""
+    return "DATASUS" if _modo_datasus() else "Município P. Gestão"
 
 def comprimir(dados: bytes, nivel: int = 1) -> bytes:
     return zlib.compress(dados, nivel)
@@ -2154,15 +2184,21 @@ SCHEMAS = {
 }
 
 # LFCES021 (vínculos de profissionais): na exportação real do SCNES a tabela é
-# LFCES021 (arquivo lfces021.xml), com o mesmo schema do "pack 1" do LFCES004.
-SCHEMAS["LFCES021"] = [SCHEMAS["LFCES004"][1]]
+# LFCES021 (arquivo lfces021.xml), com o mesmo schema do "pack 1" do LFCES004 —
+# PORÉM sem o campo CNES, que é exclusivo do estabelecimento (LFCES004).
+# No .BCK oficial o METADATA de lfces021 tem 20 campos (sem CNES); manter o
+# campo extra tornava essa tabela incompatível.
+SCHEMAS["LFCES021"] = [[campo for campo in SCHEMAS["LFCES004"][1]
+                        if campo[0] != "CNES"]]
 
 METADATA_PARAMS = {
     "CFCES000": ['<PARAMS/>'],
     "LFCES000": ['<PARAMS PRIMARY_KEY="1"/>'],
     "LFCES002": ['<PARAMS PRIMARY_KEY="1 2 3"/>'],
     "LFCES004": ['<PARAMS PRIMARY_KEY="1"/>', '<PARAMS PRIMARY_KEY="2 3 4 5 6"/>'],
-    "LFCES021": ['<PARAMS PRIMARY_KEY="2 3 4 5 6"/>'],
+    # sem o campo CNES, as chaves andam uma casa para trás (comprovado no
+    # .BCK oficial: UNIDADE_ID/PROF_ID/COD_CBO/TP_SUS_NAO_SUS/IND_VINC = 1..5)
+    "LFCES021": ['<PARAMS PRIMARY_KEY="1 2 3 4 5"/>'],
     "LFCES005": ['<PARAMS PRIMARY_KEY="1"/>'],
     "LFCES006": ['<PARAMS PRIMARY_KEY="1 2 3"/>'],
     "LFCES007": ['<PARAMS PRIMARY_KEY="1 2 3"/>'],
@@ -2246,7 +2282,20 @@ def _num(v, d=""):
     return s or d
 def _up(v):     return str(v or "").strip().upper()
 def _hoje():    return datetime.now().strftime("%Y%m%d")
-def _ts():      return int(_time.time())
+def _ts(indice: int = 0):
+    """Timestamp de uma entrada do container (TS_BASE incrementado)."""
+    return TS_BASE + int(indice)
+
+def _versao_anterior(versao) -> str:
+    """Versão SCNES imediatamente anterior ('4.8.50' -> '4.8.40').
+
+    O patch anda de 10 em 10 no SCNES; a última parte é o que muda.
+    """
+    partes = str(versao or "").split(".")
+    if len(partes) >= 3 and partes[-1].isdigit():
+        anterior = max(int(partes[-1]) - 10, 0)
+        return ".".join(partes[:-1] + [str(anterior)])
+    return str(versao or "")
 
 def _data(v):
     """DD/MM/AAAA ou AAAA-MM-DD ou AAAAMMDD -> AAAAMMDD (formato SCNES)."""
@@ -2359,11 +2408,17 @@ def _ind_vinculo(estab, empregador):
     except Exception:
         return "010500"
 
-def montar_tabelas(d):
-    """Converte os dados do formulário JARVIS nas 68 tabelas do SCNES."""
+def montar_tabelas(d, quando=None, nome_bck=""):
+    """Converte os dados do formulário JARVIS nas 68 tabelas do SCNES.
+
+    ``quando`` é o instante da exportação (data/hora que aparece no nome do
+    arquivo e na descrição) e ``nome_bck`` é o nome do .bck, gravado em
+    ``LFCES055.NM_ARQUIVO_EXP`` como o SCNES faz.
+    """
+    quando = quando or datetime.now()
     cnes = _num(d.get("f1_cnes"))
     unidade_id = COD_MUN_GESTOR + cnes
-    hoje = _hoje()
+    hoje = f"{quando:%Y%m%d}"
     op = str(d.get("f1_operacao") or "")
     statusmov = "4" if "exclu" in op.lower() else "2"
     base = {"UNIDADE_ID": unidade_id, "STATUS": "1", "STATUSMOV": statusmov,
@@ -2375,7 +2430,8 @@ def montar_tabelas(d):
 
     # CFCES000 — versão do sistema
     t["CFCES000"] = [_linha("CFCES000",
-        VERSAO=VERSAO, VERSAO_ANT="4.8.30", DT_VERSAO="", DT_ULTIMA_ATU_SIST="",
+        VERSAO=VERSAO, VERSAO_ANT=_versao_anterior(VERSAO),
+        DT_VERSAO="", DT_ULTIMA_ATU_SIST="",
         FL_LEU_MSG_VERSAO="S", DT_ULTIMO_INFORME="", FL_EXIGIR_CONSISTENCIA="N",
         FL_SCNES_SIMPLIFICADO="N")]
 
@@ -2394,7 +2450,8 @@ def montar_tabelas(d):
         NUMERO=str(d.get("f1_numero") or ""), BAIRRO=_up(d.get("f1_bairro")),
         CEP=_num(d.get("f1_cep")), TELEFONE=str(d.get("f1_telefone") or ""),
         FAX="", EMAIL=str(d.get("f1_email") or ""), INDGESTOR="1", INDCADASTR="1",
-        INDEXPORTA="0", EMAIL_GEST="", PREFIXOMAQ="", N_MAQUINA="1", INDTIPOCAD="1",
+        INDEXPORTA="0", EMAIL_GEST="", PREFIXOMAQ=PREFIXOMAQ, N_MAQUINA="",
+        INDTIPOCAD="1",
         RESPONSAVEL="", NO_COMPUTADOR="", NO_SIST_OPER="", NU_VERSAO=VERSAO,
         NU_SERV_PACK="", TP_CPU="", TP_CLOCK="", NU_MEMORIA="", NU_HD="", IN_CD="",
         IN_IMPRESSORA="", TP_REDE="", IN_INTERNET="", NO_USU_COMP="", BANCO="",
@@ -2579,9 +2636,11 @@ def montar_tabelas(d):
 
     # LFCES055 — histórico de exportação
     t["LFCES055"] = [_linha("LFCES055",
-        COMPETENCIA=CMPT, COD_MUN_GESTOR=COD_MUN_GESTOR, UNIDADE_ID=unidade_id,
-        DESTINO="", CNES=cnes, NOME_FANTA=_up(d.get("f1_fantasia")),
-        NM_ARQUIVO_EXP="", STATUS="", NU_MAC="", FL_TRANSMISSAO_DIRETA="",
+        COMPETENCIA=f"{quando:%Y%m}", COD_MUN_GESTOR=COD_MUN_GESTOR,
+        UNIDADE_ID=unidade_id,
+        DESTINO=destino_exportacao(), CNES=cnes,
+        NOME_FANTA=_up(d.get("f1_fantasia")),
+        NM_ARQUIVO_EXP=nome_bck, STATUS="1", NU_MAC="", FL_TRANSMISSAO_DIRETA="",
         USUARIO=USUARIO, DATA_ATU=hoje)]
 
     # LFCES018 — profissionais + LFCES021 — vínculos
@@ -2618,8 +2677,9 @@ def montar_tabelas(d):
             NO_EMAIL=str(p.get("email") or ""), CO_PAIS_RESID="",
             NU_CARTEIRA_HAB="", DT_EMIS_CARTEIRA_HAB="", UF_CARTEIRA_HAB="",
             ST_NMPROF_CADSUS="", ST_CNS_CORRIGIDO="", NO_SOCIAL=""))
-        t["_LFCES021_VINC"].append(_linha("LFCES021", 1,
-            CNES=cnes, UNIDADE_ID=unidade_id, PROF_ID=prof_id,
+        # LFCES021 não tem campo CNES no export oficial (só UNIDADE_ID).
+        t["_LFCES021_VINC"].append(_linha("LFCES021", 0,
+            UNIDADE_ID=unidade_id, PROF_ID=prof_id,
             COD_CBO=cbo, TP_SUS_NAO_SUS="S",
             IND_VINC=vinculo, NU_CNPJ_DET_VINC=_num(p.get("cnpj_pj")),
             D_TERCSIH=" ", CGHORAOUTR="0",
@@ -2637,29 +2697,52 @@ def _nome_arquivo(nome_base, sufixo):
     return (f"c:\\users\\{USUARIO.lower()}\\appdata\\local\\temp\\"
             f"{nome_base}{sufixo}")
 
-def _nome_transmissao(sufixo):
-    agora = datetime.now()
-    versao_dig = "".join(d for d in VERSAO if d.isdigit())
-    return (f"cnes0{UF.lower()}{COD_MUN_GESTOR}{agora:%d%m%Y%H%M%S}"
-            f"{agora:%Y}{versao_dig}{sufixo}")
+def _prefixo_nome_bck() -> str:
+    """'CNES' + [UF, só no modo Município] + código do município gestor.
 
-def _nome_bck():
-    """Nome do .BCK no padrão de transmissão do SCNES:
-    CNES0{UF}{COD_MUN_GESTOR}{DDMMYYYY}{HHMMSS}{YYYY}{versao}.bck
-    (ex.: CNES0RO1100201108202612100720264840.bck)."""
-    agora = datetime.now()
-    versao_dig = "".join(d for d in VERSAO if d.isdigit())
-    return (f"CNES0{UF}{COD_MUN_GESTOR}{agora:%d%m%Y%H%M%S}"
-            f"{agora:%Y}{versao_dig}.bck")
+        DATASUS   → CNES110020
+        MUNICÍPIO → CNES0RO110020
+    """
+    return f"CNES{'' if _modo_datasus() else '0' + UF}{COD_MUN_GESTOR}"
 
-def txt_base():
-    return f"0\r\n0\r\n2\r\n{UF}\r\n{COD_MUN_GESTOR}\r\n{GESTOR}\r\n{VERSAO}\r\nSCNES COMPLETO\r\n"
+def _radical_transmissao(quando=None):
+    """Radical do nome de transmissão (mesmo radical do .bck, sem extensão).
 
-def gerar_bck_bytes(dados, caminho_qrp=None):
+        DATASUS   → CNES1100203009202613170920264850
+        MUNICÍPIO → CNES0RO1100201008202608150720264840
+
+    O nome interno do TXT/QRP é este radical em **minúsculas** — é assim no
+    export oficial (``CNES110020…4850.bck`` ‹→› ``cnes110020…4850.txt``).
+    """
+    quando = quando or datetime.now()
+    versao_dig = "".join(c for c in VERSAO if c.isdigit())
+    return (f"{_prefixo_nome_bck()}{quando:%d%m%Y%H%M%S}"
+            f"{quando:%Y}{versao_dig}")
+
+def _nome_bck(quando=None):
+    """Nome do .BCK no padrão de transmissão do SCNES."""
+    return _radical_transmissao(quando) + ".bck"
+
+def _nome_transmissao(sufixo, quando=None):
+    """Nome dos arquivos internos do container (TXT/QRP)."""
+    return _radical_transmissao(quando).lower() + sufixo
+
+def txt_transmissao() -> str:
+    """TXT de transmissão (latin-1, linhas CRLF, CRLF final).
+
+    Linha 1 = DESTINO (é o mesmo código de ``LFCES055.DESTINO``) e linha 7 =
+    ``PREFIXOMAQ`` da instalação (é o mesmo valor de ``LFCES000.PREFIXOMAQ``).
+    Ambas foram conferidas contra o .BCK oficial.
+    """
+    return (f"0\r\n{destino_exportacao()}\r\n2\r\n{UF}\r\n{COD_MUN_GESTOR}\r\n"
+            f"{GESTOR}\r\n{VERSAO}\r\n{PREFIXOMAQ}\r\nSCNES COMPLETO\r\n")
+
+def gerar_bck_bytes(dados, caminho_qrp=None, quando=None):
     """Monta o .BCK completo: 68 tabelas + TXT + (opcional) QRP."""
-    tabelas = montar_tabelas(dados)
+    quando = quando or datetime.now()
+    nome_bck = _nome_bck(quando)
+    tabelas = montar_tabelas(dados, quando=quando, nome_bck=nome_bck)
     entradas = []
-    ts = _ts()
     for i, tabela in enumerate(ORDEM):
         if tabela == "LFCES004":
             linhas, pack_idx = tabelas.get("_LFCES004_ESTAB", []), 0
@@ -2667,18 +2750,19 @@ def gerar_bck_bytes(dados, caminho_qrp=None):
             linhas, pack_idx = tabelas.get("_LFCES021_VINC", []), 0
         else:
             linhas, pack_idx = tabelas.get(tabela, []), 0
-        entradas.append({"path": _nome_arquivo(tabela.lower(), ".xml"), "ts": ts,
+        entradas.append({"path": _nome_arquivo(tabela.lower(), ".xml"),
+                         "ts": _ts(i),
                          "dados": datapacket_xml(tabela, linhas, pack_idx=pack_idx)})
-    nome_tx = _nome_transmissao(".txt")
-    txt = (f"0\r\n0\r\n2\r\n{UF}\r\n{COD_MUN_GESTOR}\r\n{GESTOR}\r\n{VERSAO}\r\n"
-           f"{_checksum_hex(txt_base())}\r\nSCNES COMPLETO\r\n")
-    entradas.append({"path": _nome_arquivo(nome_tx, ""), "ts": ts,
-                     "dados": txt.encode("latin-1")})
+    nome_tx = _nome_transmissao(".txt", quando)
+    entradas.append({"path": _nome_arquivo(nome_tx, ""),
+                     "ts": _ts(len(ORDEM)),
+                     "dados": txt_transmissao().encode("latin-1")})
     if caminho_qrp and os.path.exists(caminho_qrp):
         entradas.append({"path": f"c:\\data sus\\cnes\\exp_{nome_tx[:-4]}.qrp",
-                         "ts": ts, "dados": open(caminho_qrp, "rb").read()})
-    desc = (f"Exportação de Secretaria Mun P. Gestão para Município P. Gestão "
-            f"em {datetime.now():%d/%m/%Y}*CN")
+                         "ts": _ts(len(ORDEM) + 1),
+                         "dados": open(caminho_qrp, "rb").read()})
+    desc = (f"Exportação de Secretaria Mun P. Gestão para {_destino_texto()} "
+            f"em {quando:%d/%m/%Y}*CN")
     return escrever_bck(desc, entradas)
 
 app = Flask(__name__)

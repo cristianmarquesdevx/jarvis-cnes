@@ -9,7 +9,7 @@ em oculto e envia para a GECAV (`gecav.semusa@portovelho.ro.gov.br`).
 >   instalação com cópia de segurança) — **nunca** a máquina de produção do município.
 > - O arquivo contém **dados pessoais (CPFs, nomes)**. Trate com sigilo.
 > - Este guia segue o fluxo oficial descrito na [wiki do CNES](https://wiki.saude.gov.br/cnes/)
->   e no portal do DATASUS. A versão do SCNES considerada é a **4.8.40** (a mesma do arquivo
+>   e no portal do DATASUS. A versão do SCNES considerada é a **4.8.50** (a mesma dos arquivos
 >   original analisado).
 
 ---
@@ -21,7 +21,7 @@ em oculto e envia para a GECAV (`gecav.semusa@portovelho.ro.gov.br`).
 | Computador Windows (XP/7/8/10/11) | O SCNES **só** roda em Windows (não homologado em Linux/Mac) |
 | **Firebird 1.5.5 (32 bits)** | Pré-requisito do SCNES — mesmo em máquina 64 bits |
 | **Java** | Pré-requisito do SCNES |
-| **SCNES COMPLETO 4.8.40** | Instala a base zerada, pronta para importar |
+| **SCNES COMPLETO 4.8.50** | Instala a base zerada, pronta para importar |
 | Acesso de **Administrador** no Windows | Necessário para instalar e executar o SCNES no Win 8/10/11 |
 
 ---
@@ -35,7 +35,7 @@ Tudo é baixado do **Portal CNES** (oficial do Ministério da Saúde):
 2. Baixe, nesta ordem:
    - **FIREBIRD** → `InstaladorFirebird-155.zip` → `Firebird-1.5.5.4926-3-Win32.exe`
    - **JAVA** (versão indicada no portal)
-   - **VERSÃO SCNES (4.8.40) → SCNES COMPLETO** → `SCNESXXXX-COMPLETA.ZIP` → `SCNESXXXX-completa.exe`
+   - **VERSÃO SCNES (4.8.50) → SCNES COMPLETO** → `SCNESXXXX-COMPLETA.ZIP` → `SCNESXXXX-completa.exe`
 3. Documentação de referência (mesma página, menu Downloads → Documentação):
    - *Manual de Instalação do SCNES e SCNES em Rede*
    - *Guia de Preenchimento SCNES* (wiki: `wiki.saude.gov.br/cnes`)
@@ -73,7 +73,8 @@ das opções abaixo:
 1. Preencha as fichas no JARVIS (o **CNES** pode ficar vazio — para estabelecimento novo a numeração é atribuída na inclusão; o `.BCK` é gerado sempre)
 2. Clique em **"✉ Enviar para GECAV"**
 3. A GECAV recebe o e-mail com o anexo `.bck` no padrão de transmissão do SCNES
-   (**`CNES0RO110020<data><hora><ano><versão>.bck`**, ex.: `CNES0RO1100201108202612100720264840.bck`)
+   (**`CNES110020<data><hora><ano><versão>.bck`**, ex.: `CNES1100203009202613170920264850.bck`;
+   o modo *Município* usa `CNES0{UF}{município}…`)
    — salve-o na máquina de teste
 
 **Opção B — Gerar localmente (sem e-mail):**
@@ -101,11 +102,13 @@ E uma checagem rápida do arquivo:
 ```python
 import app
 desc, total, entradas = app.ler_bck(open("teste_exportacao.bck", "rb").read())
-print(len(entradas), "entradas (esperado: 69 = 68 tabelas + TXT)")
-print(entradas[-1]["dados"].decode("latin-1"))   # TXT de transmissão
+print(len(entradas), "entradas (69 = 68 tabelas + TXT; 70 com o QRP)")
+print(next(e["dados"] for e in entradas
+           if e["path"].lower().endswith(".txt")).decode("latin-1"))   # TXT
 ```
 
-Confira no TXT: `0 / 0 / 2 / RO / 110020 / SEMUSA / 4.8.40 / <checksum 8 hex> / SCNES COMPLETO`.
+Confira no TXT: `0 / 6 / 2 / RO / 110020 / SEMUSA / 4.8.50 / C0DC0F75 / SCNES COMPLETO`
+(linha 1 = destino — `6` DATASUS, `0` Município; linha 7 = `PREFIXOMAQ` da instalação).
 
 ---
 
@@ -113,7 +116,7 @@ Confira no TXT: `0 / 0 / 2 / RO / 110020 / SEMUSA / 4.8.40 / <checksum 8 hex> / 
 
 1. Abra o **SCNES** (como Administrador) e faça o login na base local
 2. Menu **Movimento → Importação**
-3. Selecione o arquivo **`.BCK`** gerado (ex.: `CNES0RO1100201108202612100720264840.bck`,
+3. Selecione o arquivo **`.BCK`** gerado (ex.: `CNES1100203009202613170920264850.bck`,
    no padrão de transmissão do SCNES)
 4. Confirme a importação e aguarde o processamento (o sistema lê o container, descomprime as
    68 tabelas e grava na base Firebird)
@@ -188,7 +191,7 @@ Depois que a importação validar o cadastro:
 ## 9. Checklist final
 
 - [ ] Máquina de teste separada (ou cópia de segurança feita)
-- [ ] Firebird 1.5.5 + Java instalados; SCNES COMPLETO 4.8.40 instalado
+- [ ] Firebird 1.5.5 + Java instalados; SCNES COMPLETO 4.8.50 instalado
 - [ ] SCNES aberto como Administrador
 - [ ] `.BCK` obtido (via e-mail da GECAV ou gerado localmente) com **CNES preenchido**
 - [ ] Validação offline OK (`python -m pytest test_bck.py -v`)

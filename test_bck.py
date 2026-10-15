@@ -257,11 +257,17 @@ def _anexos(msg):
 
 
 def _regex_nome_bck_padrao():
-    """Regex do nome do .BCK no padrão de transmissão do SCNES:
-    CNES0{UF}{COD_MUN_GESTOR}{14 dígitos (DDMMYYYYHHMMSS)}{YYYY}{versao}.bck
-    (ex.: CNES0RO1100201108202612100720264840.bck)."""
+    """Regex do nome do .BCK no padrão de transmissão do SCNES.
+
+    O prefixo muda com o destino da exportação (como no SCNES):
+      DATASUS   → CNES{COD_MUN}{14 dígitos}{YYYY}{versao}.bck
+                  (ex.: CNES1100203009202613170920264850.bck)
+      MUNICÍPIO → CNES0{UF}{COD_MUN}{14 dígitos}{YYYY}{versao}.bck
+                  (ex.: CNES0RO1100201108202612100720264840.bck)
+    """
     versao_dig = "".join(d for d in app.VERSAO if d.isdigit())
-    return re.compile(rf"CNES0{app.UF}{app.COD_MUN_GESTOR}\d{{14}}\d{{4}}{versao_dig}\.bck")
+    return re.compile(
+        rf"{app._prefixo_nome_bck()}\d{{14}}\d{{4}}{versao_dig}\.bck")
 
 
 def _nome_bck_do_anexo(anexos):
@@ -282,8 +288,12 @@ def test_5_email_bck_anexado_somente_gecav(monkeypatch, tmp_path):
     dados = _dados_formulario_teste()
     pdf = tmp_path / "extrato_cnes.pdf"
     bck = tmp_path / "exportacao_scnes.bck"
+    # instante fixo: o .bck embute data/hora no nome do arquivo interno, então
+    # duas gerações "agora" podem cair em segundos diferentes
+    quando = datetime(2026, 9, 30, 13, 17, 9)
+    esperado = app.gerar_bck_bytes(dados, quando=quando)
     app.gerar_pdf_completo(dados, str(pdf))
-    bck.write_bytes(app.gerar_bck_bytes(dados))
+    bck.write_bytes(esperado)
 
     ok, msg_status = app.enviar_email_com_pdf(dados, str(pdf), None, str(bck))
     assert ok, msg_status
@@ -307,7 +317,8 @@ def test_5_email_bck_anexado_somente_gecav(monkeypatch, tmp_path):
     desc, total, entradas = app.ler_bck(bck_bytes)
     assert len(entradas) == 69
     assert sum(len(e["dados"]) for e in entradas) == total
-    assert bck_bytes == app.gerar_bck_bytes(dados)
+    assert bck_bytes == esperado
+    assert app.gerar_bck_bytes(dados, quando=quando) == esperado   # determinístico
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -343,18 +354,30 @@ def test_6_rota_enviar_email_bck_oculto(monkeypatch):
                      for p in enviada.walk()
                      if p.get_content_type() == "text/plain")
     assert "uso exclusivo GECAV" in corpo
-    assert "CNES0RO110020" in corpo
+    assert app._prefixo_nome_bck() in corpo
 
     # SEM CNES o .BCK também é gerado: o cadastro serve justamente para gerar
     # a numeração CNES de estabelecimentos novos (não se exige CNES preenchido)
     _FakeSMTP.instances.clear()
-    resp2 = client.post("/enviar-email", data={"f1_nome_empresarial": "SEM CNES"})
-    assert resp2.status_code == 200
+    sem_cnes = _dados_formulario_teste()
+    sem_cnes.pop("f1_cnes", None)
+    form2 = {k: (json.dumps(v) if isinstance(v, (list, dict)) else str(v))
+             for k, v in sem_cnes.items()}
+    resp2 = client.post("/enviar-email", data=form2)
+    assert resp2.status_code == 200, resp2.get_json()
     assert "com .BCK" in resp2.get_json()["status"]
     enviada2 = _FakeSMTP.instances[-1].mensagens[-1]
     anexos2 = dict(_anexos(enviada2))
     assert _regex_nome_bck_padrao().fullmatch(_nome_bck_do_anexo(list(anexos2.items())))
     assert "extrato_cnes.pdf" in anexos2
+
+    # o pacote de um estabelecimento novo sai SEM numeração — pronto para o
+    # BCK-Editor inserir o CNES depois
+    _, _, entradas2 = app.ler_bck(
+        anexos2[_nome_bck_do_anexo(list(anexos2.items()))])
+    xml_estab2 = entradas2[4]["dados"].decode("latin-1")
+    assert 'UNIDADE_ID="110020"' in xml_estab2
+    assert 'CNES=""' in xml_estab2
 
     # não existe rota de download do .BCK (removida — acesso apenas via e-mail)
     assert client.get("/gerar-bck").status_code == 404
@@ -378,18 +401,22 @@ def test_4_bck_do_formulario_estrutura_valida():
         tabela = app.ORDEM[i]
         assert e["path"].endswith(f"\\{tabela.lower()}.xml"), e["path"]
 
-    # TXT de transmissão no formato oficial
+    # TXT de transmissão no formato oficial: linha 1 = DESTINO e linha 7 =
+    # PREFIXOMAQ (ambos conferidos contra o .BCK oficial do SCNES)
     txt = entradas[-1]["dados"].decode("latin-1")
     linhas_txt = txt.split("\r\n")
-    assert linhas_txt[0:5] == ["0", "0", "2", app.UF, app.COD_MUN_GESTOR]
+    assert linhas_txt[0:5] == ["0", app.destino_exportacao(), "2", app.UF,
+                               app.COD_MUN_GESTOR]
     assert linhas_txt[6] == app.VERSAO
-    assert re.fullmatch(r"[0-9A-F]{8}", linhas_txt[7])      # checksum 8 hex
+    assert linhas_txt[7] == app.PREFIXOMAQ
+    assert re.fullmatch(r"[0-9A-F]{8}", linhas_txt[7])
     assert linhas_txt[8] == "SCNES COMPLETO"
 
-    # nome do TXT no padrão real do SCNES: cnes0<uf><mun><timestamp><ano><dígitos da versão>.txt
+    # nome do TXT no padrão real do SCNES: o mesmo radical do .bck em
+    # minúsculas, com <timestamp><ano><dígitos da versão>
     nome_txt = entradas[-1]["path"].split("\\")[-1]
     versao_dig = "".join(d for d in app.VERSAO if d.isdigit())
-    assert nome_txt.startswith(f"cnes0{app.UF.lower()}{app.COD_MUN_GESTOR}")
+    assert nome_txt.startswith(app._prefixo_nome_bck().lower())
     assert nome_txt.endswith(f"{datetime.now():%Y}{versao_dig}.txt")
 
     # identificação do estabelecimento (posição 4) preenchida
@@ -410,3 +437,129 @@ def test_4_bck_do_formulario_estrutura_valida():
     desc2, total2, entradas2 = app.ler_bck(app.escrever_bck(
         desc, [{"path": e["path"], "ts": e["ts"], "dados": e["dados"]} for e in entradas]))
     assert [e["dados"] for e in entradas2] == [e["dados"] for e in entradas]
+
+
+def _entrada(entradas, nome):
+    return next(e for e in entradas if e["path"].lower().endswith(nome))["dados"]
+
+
+# ═══════════════════════════════════════════════════════════════
+#  7) LFCES055/LFCES000/CFCES000 — campos que o SCNES preenche
+# ═══════════════════════════════════════════════════════════════
+def test_7_campos_de_destino_maquina_e_versao():
+    quando = datetime(2026, 9, 30, 13, 17, 9)
+    desc, total, entradas = app.ler_bck(
+        app.gerar_bck_bytes(_dados_formulario_teste(), quando=quando))
+
+    # LFCES055: DESTINO (== linha 1 do TXT) e o nome do próprio .bck
+    lf055 = _entrada(entradas, "lfces055.xml").decode("latin-1")
+    assert f'DESTINO="{app.destino_exportacao()}"' in lf055
+    assert f'NM_ARQUIVO_EXP="{app._nome_bck(quando)}"' in lf055
+    assert f'COMPETENCIA="{quando:%Y%m}"' in lf055
+
+    # LFCES000: PREFIXOMAQ preenchido, N_MAQUINA vazio (como no oficial)
+    lf000 = _entrada(entradas, "lfces000.xml").decode("latin-1")
+    assert f'PREFIXOMAQ="{app.PREFIXOMAQ}"' in lf000
+    assert 'N_MAQUINA=""' in lf000
+
+    # CFCES000: VERSAO_ANT é a versão anterior à declarada
+    cf = _entrada(entradas, "cfces000.xml").decode("latin-1")
+    assert f'VERSAO="{app.VERSAO}"' in cf
+    assert 'VERSAO_ANT="4.8.40"' in cf
+
+    # LFCES021 não carrega o campo CNES (é exclusivo do estabelecimento)
+    lf021_meta = _entrada(entradas, "lfces021.xml").split(b"<ROWDATA>")[0]
+    assert b'attrname="CNES"' not in lf021_meta
+    assert b'PRIMARY_KEY="1 2 3 4 5"' in lf021_meta
+    assert b'CNES=' not in _entrada(entradas, "lfces021.xml")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  8) Modo MUNICÍPIO — o padrão antigo continua disponível
+# ═══════════════════════════════════════════════════════════════
+def test_8_modo_municipio_mantem_o_padrao_antigo(monkeypatch):
+    monkeypatch.setattr(app, "MODO_EXPORTACAO", "MUNICIPIO")
+    quando = datetime(2026, 9, 28, 15, 45, 47)
+    assert app._nome_bck(quando) == "CNES0RO1100202809202615454720264850.bck"
+    assert app._nome_transmissao(".txt", quando) == \
+        "cnes0ro1100202809202615454720264850.txt"
+    assert app.destino_exportacao() == "0"
+
+    desc, total, entradas = app.ler_bck(
+        app.gerar_bck_bytes(_dados_formulario_teste(), quando=quando))
+    assert desc.endswith("para Município P. Gestão em 28/09/2026*CN")
+    linhas = entradas[-1]["dados"].decode("latin-1").split("\r\n")
+    assert linhas[1] == "0"
+    lf055 = _entrada(entradas, "lfces055.xml").decode("latin-1")
+    assert 'DESTINO="0"' in lf055
+    assert 'NM_ARQUIVO_EXP="CNES0RO1100202809202615454720264850.bck"' in lf055
+
+
+# ═══════════════════════════════════════════════════════════════
+#  9) Comparação ESTRUTURAL com o .BCK oficial (golden file)
+#     Defina BCK_OFICIAL=/caminho/CNES....bck  (e, opcionalmente,
+#     QRP_OFICIAL=/caminho/exp_....qrp) para habilitar.
+# ═══════════════════════════════════════════════════════════════
+_OFICIAL = os.environ.get("BCK_OFICIAL")
+
+
+@pytest.mark.skipif(not _OFICIAL, reason="defina BCK_OFICIAL p/ comparar com o oficial")
+def test_9_estrutura_identica_ao_bck_oficial(monkeypatch):
+    """O pacote do JARVIS tem de ter a MESMA estrutura do export oficial."""
+    _, _, ent_o = app.ler_bck(open(_OFICIAL, "rb").read())
+
+    # deriva o instante/nome a partir do próprio oficial
+    txt_o = next(e for e in ent_o if e["path"].lower().endswith(".txt"))
+    radical_o = os.path.basename(txt_o["path"].replace("\\", "/"))[:-4]
+    m = re.fullmatch(r"cnes(?:0[a-z]{2})?(?P<mun>\d{6})(?P<d>\d{8})"
+                     r"(?P<h>\d{6})(?P<y>\d{4})(?P<v>\d{4})", radical_o)
+    assert m, radical_o
+    quando = datetime.strptime(m.group("d") + m.group("h"), "%d%m%Y%H%M%S")
+
+    lf055_o = next(e for e in ent_o
+                   if os.path.basename(e["path"]).lower() == "lfces055.xml")
+    nome_oficial = re.search(r'NM_ARQUIVO_EXP="([^"]*)"',
+                             lf055_o["dados"].decode("latin-1")).group(1)
+    assert app._nome_bck(quando).lower() == nome_oficial.lower()
+    assert app._nome_transmissao(".txt", quando) == radical_o + ".txt"
+
+    qrp = os.environ.get("QRP_OFICIAL")
+    desc_j, total_j, ent_j = app.ler_bck(app.gerar_bck_bytes(
+        _dados_formulario_teste(), caminho_qrp=qrp, quando=quando))
+    desc_o = app.ler_bck(open(_OFICIAL, "rb").read())[0]
+
+    # container
+    assert desc_j == desc_o
+    assert len(ent_j) == len(ent_o)
+    assert ent_j[0]["lead"] == len(ent_j)
+    assert all(e["lead"] == 0 for e in ent_j[1:])
+    assert total_j == sum(len(e["dados"]) for e in ent_j)
+    assert ent_j[0]["ts"] == app.TS_BASE
+
+    # ordem e nomes das entradas
+    assert ([os.path.basename(e["path"]) for e in ent_j] ==
+            [os.path.basename(e["path"]) for e in ent_o])
+
+    # METADATA idêntico nas 68 tabelas
+    def xml_por_nome(ents):
+        return {os.path.basename(e["path"]).lower(): e["dados"]
+                for e in ents if e["path"].lower().endswith(".xml")}
+    mo, mj = xml_por_nome(ent_o), xml_por_nome(ent_j)
+    assert len(mo) == len(mj) == 68
+    assert set(mo) == set(mj)
+    divergentes = [n for n in sorted(mo)
+                   if mo[n].split(b"<ROWDATA>")[0] !=
+                   mj[n].split(b"<ROWDATA>")[0]]
+    assert divergentes == []
+
+    # TXT byte a byte
+    assert _entrada(ent_j, ".txt") == _entrada(ent_o, ".txt")
+
+    # QRP: mesmo caminho interno e conteúdo preservado
+    q_o = [e for e in ent_o if e["path"].lower().endswith(".qrp")]
+    if q_o:
+        q_j = [e for e in ent_j if e["path"].lower().endswith(".qrp")]
+        assert len(q_j) == len(q_o) == 1
+        assert q_j[0]["path"] == q_o[0]["path"]
+        if qrp:
+            assert q_j[0]["dados"] == q_o[0]["dados"]
